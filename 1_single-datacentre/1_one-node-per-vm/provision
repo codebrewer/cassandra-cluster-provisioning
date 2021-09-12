@@ -1,0 +1,251 @@
+#!/bin/bash
+#
+# Provision a single Cassandra cluster node running in a Docker container.
+#
+# This script hard-codes aspects of the cluster nodes:
+#   - four nodes in total are expected to be created (although up to 9 would succeed)
+#   - broadcast IP addresses are in the 10.101.101.0/24 subnet and are allocated starting with 10.101.101.101
+#
+# Arguments:
+#   Name of the Cassandra cluster the node should join, a string
+#   Index number of the cluster node to create, 1 to 4 for this scenario
+#
+
+set -u
+
+# This scenario is a single-DC cluster of 4 nodes so to keep it simple there's a
+# single hard-coded seed node
+declare -r cassandra_seeds="10.101.101.101"
+
+# The Cassandra process uses these IDs in the Docker container
+declare -r container_cassandra_process_gid="999"
+declare -r container_cassandra_process_uid="999"
+
+#
+# Write a timestamped message to stderr
+#
+# Arguments:
+#   Any text
+#
+# Output:
+#   Writes arguments to stderr
+#
+err() {
+  echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*" >&2
+}
+
+#
+# Write a timestamped message to stdout
+#
+# Arguments:
+#   Any text
+#
+# Output:
+#   Writes arguments to stdout
+#
+log() {
+  echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*"
+}
+
+#
+# Write script usage information to stderr
+#
+# Output:
+#   Writes usage text to stderr
+#
+usage() {
+  cat <<EOF >&2
+Usage: $(basename "$0") [cluster name] [node number]
+EOF
+}
+
+#
+# Check whether the script was passed the expected number of arguments.
+#
+# Arguments:
+#   The arguments passed to the script
+#
+# Returns:
+#   0 if the correct number of arguments were passed, 1 otherwise
+#
+check_argument_count() {
+  if [[ ${#} -ne 2 ]]; then
+    return 1
+  else
+    return 0
+  fi
+}
+
+#
+# Get the status and state of a Cassandra node, as reported by `nodetool status`.
+#
+# Executes `nodetool status` in a running container and echoes the status and state of the cluster node with a given IP
+# address, if found. Status can be one of 'U' or 'D'; state can be one of 'J', 'L', 'M' or 'N'.
+#
+# Arguments:
+#   Name/ID of a running Docker container with `nodetool`, a string
+#   IP address of a cluster node, a string
+#
+# Outputs:
+#   Writes current status to stdout
+#
+# Returns:
+#   0 if a valid pairing of status and state are determined, 1 if not
+#
+cassandra_node_status_and_state() {
+  if [[ $# -ne 2 ]]; then
+    err "Usage: $0 CONTAINER NODE_ADDRESS"
+
+    return 1
+  fi
+
+  declare -r container_id="$1"
+  declare -r node_address="$2"
+  declare -r regex="^([UD][JLMN])[[:space:]]+${node_address//\./\\.}[[:space:]]+"
+  declare cluster_status
+
+  if cluster_status=$(docker exec "${container_id}" nodetool status 2>/dev/null | grep -E "${regex}"); then
+    if [[ ${cluster_status} =~ ${regex} ]]; then
+      echo "${BASH_REMATCH[1]}"
+
+      return 0
+    fi
+  else
+    err "failed to read current node status - still booting?"
+  fi
+
+  return 1
+}
+
+#
+# Wait for a Cassandra node to reach a particular status and state, as reported by `nodetool status`.
+#
+# The node is polled every 5 seconds up to 30 times or until its current status and state match the target values.
+#
+# Arguments:
+#   Name/ID of a running Docker container with `nodetool`, a string
+#   IP address of a cluster node, a string
+#   Target status and state of a cluster node, a string
+#
+# Returns:
+#   0 if the target status and state are reached, non-zero on error or if the target state is not reached
+#
+await_cassandra_node_status() {
+  if [[ $# -ne 3 ]]; then
+    err "Usage: $0 CONTAINER NODE_ADDRESS NODE_STATUS"
+
+    return 1
+  fi
+
+  declare -r container_id="$1"
+  declare -r node_address="$2"
+  declare -r target_node_status="$3"
+  declare current_node_status
+
+  # Poll the current state and status at 5 second intervals, giving up after 30 attempts
+  declare -ir poll_interval=5
+  declare -ir max_polls=30
+  declare -i poll_number=1
+
+  while [ ${poll_number} -lt ${max_polls} ]; do
+    if current_node_status="$(cassandra_node_status_and_state "${container_id}" "${node_address}")"; then
+      log "${current_node_status}"
+
+      if [[ "${current_node_status}" == "${target_node_status}" ]]; then
+        return 0
+      fi
+    fi
+
+    sleep ${poll_interval}
+  done
+
+  return 1
+}
+
+#
+# Create and set ownership on directories that are bind-mounted into the Cassandra Docker container to make data and
+# logs visible to the host VM.
+#
+# Returns:
+#   0 if directories are created and ownership set, 1 otherwise
+#
+create_bind_mount_dirs() {
+  if ! mkdir /var/lib/cassandra; then
+    err "failed to create Cassandra data bind mount dir"
+
+    return 1
+  fi
+
+  if ! chown ${container_cassandra_process_uid}:${container_cassandra_process_gid} /var/lib/cassandra; then
+    err "failed to change ownership of Cassandra data bind mount dir"
+
+    return 1
+  fi
+
+  if ! mkdir /var/log/cassandra; then
+    err "failed to create Cassandra log bind mount dir"
+
+    return 1
+  fi
+
+  if ! chown ${container_cassandra_process_uid}:${container_cassandra_process_gid} /var/log/cassandra; then
+    err "failed to change ownership of Cassandra log bind mount dir"
+
+    return 1
+  fi
+
+  return 0
+}
+
+#
+# Run a Docker container from the Cassandra image.
+#
+# Outputs:
+#   Whatever `docker run` might write (the container ID to stdout, if successfully run)
+#
+# Returns:
+#   0 if the container is successfully run, non-zero otherwise
+#
+run_docker_container() {
+  docker run \
+    --detach \
+    --env CASSANDRA_BROADCAST_ADDRESS="${broadcast_address}" \
+    --env CASSANDRA_CLUSTER_NAME="${cluster_name}" \
+    --env CASSANDRA_SEEDS="${cassandra_seeds}" \
+    --env LOCAL_JMX=no \
+    --mount type=bind,source=/var/lib/cassandra,destination=/var/lib/cassandra \
+    --mount type=bind,source=/var/log/cassandra,destination=/var/log/cassandra \
+    --name "cassandra-node-${node_number}" \
+    --publish 7000:7000 \
+    --publish 7001:7001 \
+    --publish 7199:7199 \
+    --publish 9042:9042 \
+    --restart unless-stopped \
+    cassandra:4.0.0 \
+    -Dcom.sun.management.jmxremote.authenticate=false \
+    -Djava.rmi.server.hostname="${broadcast_address}"
+}
+
+main() {
+  if ! check_argument_count "$@"; then
+    usage
+
+    exit 1
+  fi
+
+  readonly cluster_name="$1"
+  readonly node_number="$2"
+  readonly broadcast_address="10.101.101.10${node_number}"
+  readonly node_name="cassandra-node-${node_number}"
+
+  log "provisioning node ${node_name} in cluster \"${cluster_name}\" configured with broadcast address ${broadcast_address}"
+  log "creating bind mount dirs"
+  create_bind_mount_dirs || exit 1
+  log "running Cassandra Docker container"
+  run_docker_container || exit 1
+  log "waiting for node ${node_name} in cluster \"${cluster_name}\" to come up"
+  await_cassandra_node_status "cassandra-node-${node_number}" "${broadcast_address}" "UN" || exit 1
+  log "node ${node_name} in cluster \"${cluster_name}\" is up with broadcast address ${broadcast_address}"
+}
+
+main "$@"

@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# Manage a cluster of 4 Cassandra nodes hosted in Vagrant-managed VMs.
+#
+# VMs are named node_1, node_2, node_3 and node_4, with the Cassandra node running in node_1 designated as the single
+# seed node in the cluster. node_1 is therefore brought up first and taken down last.
+#
+# Arguments:
+#   action, one of 'up', 'destroy' or 'down'
+#
+
+set -u
+
+err() {
+  echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*" >&2
+}
+
+log() {
+  echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*"
+}
+
+usage() {
+  cat <<EOF >&2
+Usage: $(basename "$0") [up|destroy|down]
+EOF
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+
+  exit 2
+fi
+
+case "$1" in
+  up)
+    for node_suffix in {1..4} ; do
+      log "bringing up node_${node_suffix}"
+
+      if ! vagrant up "node_${node_suffix}"; then
+        err "error bringing up node_${node_suffix}"
+      fi
+    done
+    ;;
+  destroy)
+    for node_suffix in {4..1} ; do
+      log "destroying node_${node_suffix}"
+
+      if ! vagrant destroy --force "node_${node_suffix}"; then
+        err "error destroying node_${node_suffix}"
+      fi
+    done
+    ;;
+  down)
+    for node_suffix in {4..1} ; do
+      log "bringing down node_${node_suffix}"
+
+      if ! vagrant halt "node_${node_suffix}"; then
+        err "error bringing down node_${node_suffix}"
+      fi
+    done
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

@@ -1,0 +1,38 @@
+# frozen_string_literal: true
+
+BOX = 'codebrewer/ubuntu-20.04-cassandra-4.0.0'
+CLUSTER_NAME = 'Scenario 1.1 Cluster'
+DEFAULT_SYNCED_FOLDER_SOURCE = '.'
+DEFAULT_SYNCED_FOLDER_TARGET = '/vagrant'
+IPV4_ADDRESS_PREFIX = '10.101.101.10'
+NODE_NAME_PREFIX = 'node_'
+NODE_NUMBER_MAX = 8
+NODE_NUMBER_MIN = 1
+PARALLELS_PROVIDER = 'parallels'
+PRIVATE_NETWORK = 'private_network'
+PROVISION_SCRIPT = 'provision'
+SHELL_PROVISIONER = 'shell'
+VAGRANT_CONFIGURATION_VERSION = 2
+VM_NAME_PREFIX = 'Node'
+VM_RAM_MB = 2048
+VM_CPU_COUNT = 4
+
+Vagrant.configure VAGRANT_CONFIGURATION_VERSION do |config|
+  (NODE_NUMBER_MIN..NODE_NUMBER_MAX).each do |node_number|
+    config.vm.define "#{NODE_NAME_PREFIX}#{node_number}" do |node|
+      node.nfs.verify_installed = false
+      node.vm.box = BOX
+      node.vm.network PRIVATE_NETWORK, ip: "#{IPV4_ADDRESS_PREFIX}#{node_number}"
+      node.vm.synced_folder DEFAULT_SYNCED_FOLDER_SOURCE, DEFAULT_SYNCED_FOLDER_TARGET, disabled: true
+      node.vm.provider PARALLELS_PROVIDER do |parallels_vm|
+        parallels_vm.name = "#{CLUSTER_NAME} #{VM_NAME_PREFIX} #{node_number}"
+        parallels_vm.memory = VM_RAM_MB
+        parallels_vm.cpus = VM_CPU_COUNT
+      end
+      node.vm.provision SHELL_PROVISIONER do |shell|
+        shell.path = PROVISION_SCRIPT
+        shell.args = [CLUSTER_NAME, node_number.to_s]
+      end
+    end
+  end
+end
