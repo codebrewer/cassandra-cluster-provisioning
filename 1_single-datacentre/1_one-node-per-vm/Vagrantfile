@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-BOX = 'codebrewer/ubuntu-20.04-cassandra-4.0.0'
+BOX = 'codebrewer/debian-11.0-cassandra-4.0'
 CLUSTER_NAME = 'Scenario 1.1 Cluster'
 DEFAULT_SYNCED_FOLDER_SOURCE = '.'
 DEFAULT_SYNCED_FOLDER_TARGET = '/vagrant'

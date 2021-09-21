@@ -221,7 +221,7 @@ run_docker_container() {
     --publish 7199:7199 \
     --publish 9042:9042 \
     --restart unless-stopped \
-    cassandra:4.0.0 \
+    cassandra:4.0.1 \
     -Dcom.sun.management.jmxremote.authenticate=false \
     -Djava.rmi.server.hostname="${broadcast_address}"
 }
